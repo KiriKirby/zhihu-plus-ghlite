@@ -37,11 +37,12 @@ jobs:
           set -euo pipefail
           if [[ -n "$REQUESTED_TAG" ]]; then
             tag="$REQUESTED_TAG"
-            gh api "repos/$UPSTREAM_REPOSITORY/releases/tags/$tag" \
-              --jq 'select(.draft == false and .prerelease == false) | .tag_name' >/dev/null
           else
             tag="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq '.tag_name')"
           fi
+
+          gh api "repos/$UPSTREAM_REPOSITORY/releases/tags/$tag" \
+            --jq 'select(.draft == false and .prerelease == false) | .tag_name' >/dev/null
 
           if [[ ! "$tag" =~ ^[0-9]+(\.[0-9]+){0,3}(-[0-9A-Za-z._-]+)?$ ]]; then
             echo "Unexpected upstream tag: $tag" >&2
