@@ -1,0 +1,134 @@
+name: Release Lite
+
+on:
+  schedule:
+    - cron: "23 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional upstream formal tag to build, for example 0.27"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lite-release
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPOSITORY: zly2006/zhihu-plus-plus
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.release.outputs.should_build }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Select one missing upstream formal release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.upstream_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$REQUESTED_TAG" ]]; then
+            tag="$REQUESTED_TAG"
+            gh api "repos/$UPSTREAM_REPOSITORY/releases/tags/$tag" \
+              --jq 'select(.draft == false and .prerelease == false) | .tag_name' >/dev/null
+          else
+            tag="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq '.tag_name')"
+          fi
+
+          if [[ ! "$tag" =~ ^[0-9]+(\.[0-9]+){0,3}(-[0-9A-Za-z._-]+)?$ ]]; then
+            echo "Unexpected upstream tag: $tag" >&2
+            exit 1
+          fi
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | grep -Fxq 'zhihu++-lite.apk'; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    needs: discover
+    if: needs.discover.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out automation
+        uses: actions/checkout@v4
+        with:
+          path: automation
+
+      - name: Check out the exact upstream release source
+        uses: actions/checkout@v4
+        with:
+          repository: zly2006/zhihu-plus-plus
+          ref: ${{ needs.discover.outputs.tag }}
+          path: source
+          fetch-depth: 1
+
+      - name: Apply Lite distribution patch
+        run: python3 automation/scripts/patch_upstream.py --source source --release-repository "$GITHUB_REPOSITORY"
+
+      - name: Verify the patched update source
+        working-directory: source
+        run: |
+          set -euo pipefail
+          rg -F "repos/$GITHUB_REPOSITORY/releases/latest" shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
+          rg -F 'Nightly updates are disabled for Lite releases' shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
+          ! rg -F 'redenmc.com/api/zhihu/releases/latest' shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            source/**/*.gradle.kts
+            source/**/gradle-wrapper.properties
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build signed Lite APK only
+        working-directory: source
+        env:
+          signingKey: ${{ secrets.ANDROID_SIGNING_KEY }}
+          keyAlias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew :app:assembleLiteRelease --no-daemon --parallel --max-workers=2 --build-cache --configuration-cache
+          mkdir -p dist
+          mv app/build/outputs/apk/lite/release/app-lite-release.apk dist/zhihu++-lite.apk
+          sha256sum dist/zhihu++-lite.apk > dist/zhihu++-lite.apk.sha256
+
+      - name: Create or repair the Lite release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.discover.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.discover.outputs.tag }} Lite
+          body: |
+            自动构建自上游正式版 `${{ needs.discover.outputs.tag }}`，仅包含 Lite APK。
+
+            包名：`com.github.zly2006.zhplus.lite`
+
+            此 APK 使用本仓库的签名密钥。若已安装上游 Lite，Android 要求先卸载上游版本后再安装，应用数据不会随之保留。
+
+            应用内更新会查询本仓库的正式 Release。对应源码为上游同名 tag 加本仓库的 `scripts/patch_upstream.py`。
+          files: |
+            source/dist/zhihu++-lite.apk
+            source/dist/zhihu++-lite.apk.sha256
+          fail_on_unmatched_files: true
