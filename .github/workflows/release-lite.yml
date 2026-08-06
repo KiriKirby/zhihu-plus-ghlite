@@ -82,9 +82,9 @@ jobs:
         working-directory: source
         run: |
           set -euo pipefail
-          rg -F "repos/$GITHUB_REPOSITORY/releases/latest" shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
-          rg -F 'Nightly updates are disabled for Lite releases' shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
-          ! rg -F 'redenmc.com/api/zhihu/releases/latest' shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
+          grep -F "repos/$GITHUB_REPOSITORY/releases/latest" shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
+          grep -F 'Nightly updates are disabled for Lite releases' shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
+          ! grep -F 'redenmc.com/api/zhihu/releases/latest' shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
 
       - name: Set up JDK
         uses: actions/setup-java@v4
