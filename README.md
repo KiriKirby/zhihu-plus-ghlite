@@ -11,7 +11,7 @@ data is not retained by that migration.
 
 ## Automation
 
-`.github/workflows/release-lite.yml` checks upstream every two hours, and can also be
+`.github/workflows/release-lite.yml` checks upstream once a week (Monday 03:23 UTC), and can also be
 started manually. It does no Android build unless the matching release in this
 repository is absent or lacks `zhihu++-lite.apk`. Builds only run
 `:app:assembleLiteRelease`; Full, desktop, tests, Rust targets, and NDK installation

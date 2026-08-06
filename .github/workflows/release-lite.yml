@@ -2,7 +2,7 @@ name: Release Lite
 
 on:
   schedule:
-    - cron: "23 */2 * * *"
+    - cron: "23 3 * * 1"
   workflow_dispatch:
     inputs:
       upstream_tag:
