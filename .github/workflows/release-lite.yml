@@ -26,6 +26,7 @@ jobs:
     outputs:
       should_build: ${{ steps.release.outputs.should_build }}
       tag: ${{ steps.release.outputs.tag }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
     steps:
       - name: Select one missing upstream formal release
         id: release
@@ -41,11 +42,14 @@ jobs:
             tag="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/latest" --jq '.tag_name')"
           fi
 
-          gh api "repos/$UPSTREAM_REPOSITORY/releases/tags/$tag" \
-            --jq 'select(.draft == false and .prerelease == false) | .tag_name' >/dev/null
+          if [[ ! "$tag" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then
+            echo "Unexpected upstream formal-release tag: $tag" >&2
+            exit 1
+          fi
 
-          if [[ ! "$tag" =~ ^[0-9]+(\.[0-9]+){0,3}(-[0-9A-Za-z._-]+)?$ ]]; then
-            echo "Unexpected upstream tag: $tag" >&2
+          release_json="$(gh api "repos/$UPSTREAM_REPOSITORY/releases/tags/$tag")"
+          if [[ "$(jq -r '.draft' <<<"$release_json")" != "false" || "$(jq -r '.prerelease' <<<"$release_json")" != "false" ]]; then
+            echo "Upstream tag is not a formal, non-draft release: $tag" >&2
             exit 1
           fi
 
@@ -56,6 +60,19 @@ jobs:
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          ref_json="$(gh api "repos/$UPSTREAM_REPOSITORY/git/ref/tags/$tag")"
+          source_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+          source_type="$(jq -r '.object.type' <<<"$ref_json")"
+          while [[ "$source_type" == "tag" ]]; do
+            ref_json="$(gh api "repos/$UPSTREAM_REPOSITORY/git/tags/$source_sha")"
+            source_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+            source_type="$(jq -r '.object.type' <<<"$ref_json")"
+          done
+          if [[ "$source_type" != "commit" || ! "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve upstream tag to a commit SHA: $tag" >&2
+            exit 1
+          fi
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
 
   build-and-release:
     needs: discover
@@ -64,15 +81,15 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Check out automation
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: automation
 
       - name: Check out the exact upstream release source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: zly2006/zhihu-plus-plus
-          ref: ${{ needs.discover.outputs.tag }}
+          ref: ${{ needs.discover.outputs.source_sha }}
           path: source
           fetch-depth: 1
 
@@ -88,7 +105,7 @@ jobs:
           ! grep -F 'redenmc.com/api/zhihu/releases/latest' shared/src/commonMain/kotlin/com/github/zly2006/zhihu/updater/GithubRelease.kt
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: zulu
           java-version: "17"
@@ -98,7 +115,7 @@ jobs:
             source/**/gradle-wrapper.properties
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
 
       - name: Build signed Lite APK only
         working-directory: source
@@ -115,21 +132,37 @@ jobs:
           mv app/build/outputs/apk/lite/release/app-lite-release.apk dist/zhihu++-lite.apk
           sha256sum dist/zhihu++-lite.apk > dist/zhihu++-lite.apk.sha256
 
+      - name: Package corresponding source
+        working-directory: source
+        env:
+          UPSTREAM_TAG: ${{ needs.discover.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.discover.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          printf 'Upstream repository: https://github.com/%s\nUpstream tag: %s\nUpstream commit: %s\nDistribution patch: automation/scripts/patch_upstream.py\nAutomation commit: %s\n' \
+            "$UPSTREAM_REPOSITORY" "$UPSTREAM_TAG" "$UPSTREAM_COMMIT" "$GITHUB_SHA" > SOURCE-METADATA.txt
+          cp ../automation/scripts/patch_upstream.py lite-distribution-patch.py
+          tar --exclude-vcs --exclude='./.gradle' --exclude='*/build' --exclude='./dist' \
+            -czf dist/zhihu++-lite-corresponding-source.tar.gz .
+          sha256sum dist/zhihu++-lite-corresponding-source.tar.gz > dist/zhihu++-lite-corresponding-source.tar.gz.sha256
+
       - name: Create or repair the Lite release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ needs.discover.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: ${{ needs.discover.outputs.tag }} Lite
           body: |
-            自动构建自上游正式版 `${{ needs.discover.outputs.tag }}`，仅包含 Lite APK。
+            自动构建自上游正式版 `${{ needs.discover.outputs.tag }}`（commit `${{ needs.discover.outputs.source_sha }}`），仅包含 Lite APK。
 
             包名：`com.github.zly2006.zhplus.lite`
 
             此 APK 使用本仓库的签名密钥。若已安装上游 Lite，Android 要求先卸载上游版本后再安装，应用数据不会随之保留。
 
-            应用内更新会查询本仓库的正式 Release。对应源码为上游同名 tag 加本仓库的 `scripts/patch_upstream.py`。
+            应用内更新会查询本仓库的正式 Release。完整对应源码及 SHA-256 校验和作为 Release 附件提供。
           files: |
             source/dist/zhihu++-lite.apk
             source/dist/zhihu++-lite.apk.sha256
+            source/dist/zhihu++-lite-corresponding-source.tar.gz
+            source/dist/zhihu++-lite-corresponding-source.tar.gz.sha256
           fail_on_unmatched_files: true

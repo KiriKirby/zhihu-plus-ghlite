@@ -35,6 +35,9 @@ a different certificate.
 
 ## Corresponding source
 
-See [NOTICE.md](NOTICE.md). A release tag maps directly to its upstream tag; the
-patch script in this repository is the complete local modification applied to that
-source before compilation.
+See [NOTICE.md](NOTICE.md). Each release includes a complete corresponding-source
+archive, a metadata file recording the immutable upstream commit and automation
+commit, and SHA-256 checksums. The APK is signed with a key dedicated exclusively
+to this repository's Lite releases.
+
+This project is distributed under [AGPL-3.0-only](LICENSE).
